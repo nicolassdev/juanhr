@@ -31,13 +31,11 @@ const adminLinks = [
   { href: "/admin/permissions", label: "Permissions", icon: ShieldCheck },
   { href: "/admin/audit-logs", label: "Audit Logs", icon: BookOpen },
 ];
-
 const supervisorLinks = [
   { href: "/supervisor/dashboard", label: "Dashboard", icon: LayoutDashboard },
-  { href: "/supervisor/my-ojt", label: "My OJT Employees", icon: Users },
+  { href: "/supervisor/my-ojt", label: "Employees", icon: Users },
   { href: "/supervisor/dtr", label: "DTR Monitor", icon: ClipboardList },
 ];
-
 const ojtLinks = [
   { href: "/ojt/dashboard", label: "Dashboard", icon: LayoutDashboard },
   { href: "/ojt/dtr", label: "Time Record (DTR)", icon: Clock },
@@ -67,28 +65,49 @@ export default function Sidebar() {
   const avatarSrc = user?.profileImage ? `${API}${user.profileImage}` : null;
 
   return (
-    <aside className="w-64 min-h-screen bg-[#0e1220] border-r border-[#1e2740] flex flex-col fixed left-0 top-0 bottom-0 z-40">
+    <aside
+      className="w-64 min-h-screen flex flex-col fixed left-0 top-0 bottom-0 z-40 border-r"
+      style={{ background: "var(--surface)", borderColor: "var(--border)" }}
+    >
       {/* Logo */}
-      <div className="p-6 border-b border-[#1e2740]">
+      <div className="p-6 border-b" style={{ borderColor: "var(--border)" }}>
         <div className="flex items-center gap-3">
-          <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-cyan-400 to-violet-500 flex items-center justify-center text-lg">
+          <div
+            className="w-9 h-9 rounded-xl flex items-center justify-center text-lg"
+            style={{
+              background:
+                "linear-gradient(135deg, var(--accent), var(--accent4))",
+            }}
+          >
             🎓
           </div>
           <div>
-            <div className="font-black text-white text-lg leading-none">
+            <div
+              className="font-black text-lg leading-none"
+              style={{ color: "var(--text)" }}
+            >
               JuanHR
             </div>
-            <div className="text-cyan-400 text-xs font-bold tracking-widest">
+            <div
+              className="text-xs font-bold tracking-widest"
+              style={{ color: "var(--accent)" }}
+            >
               v3
             </div>
           </div>
         </div>
       </div>
 
-      {/* User — shows avatar if uploaded */}
-      <div className="p-4 border-b border-[#1e2740]">
+      {/* User */}
+      <div className="p-4 border-b" style={{ borderColor: "var(--border)" }}>
         <div className="flex items-center gap-3">
-          <div className="w-9 h-9 rounded-full border border-[#1e2740] overflow-hidden flex-shrink-0 bg-gradient-to-br from-cyan-400/20 to-violet-500/20 flex items-center justify-center">
+          <div
+            className="w-9 h-9 rounded-full border overflow-hidden flex-shrink-0 flex items-center justify-center"
+            style={{
+              borderColor: "var(--border)",
+              background: "color-mix(in srgb, var(--accent) 15%, transparent)",
+            }}
+          >
             {avatarSrc ? (
               <img
                 src={avatarSrc}
@@ -96,13 +115,19 @@ export default function Sidebar() {
                 className="w-full h-full object-cover"
               />
             ) : (
-              <span className="text-sm font-bold text-cyan-400">
+              <span
+                className="text-sm font-bold"
+                style={{ color: "var(--accent)" }}
+              >
                 {user?.fullName?.charAt(0) || "U"}
               </span>
             )}
           </div>
           <div className="overflow-hidden">
-            <div className="text-sm font-semibold text-white truncate">
+            <div
+              className="text-sm font-semibold truncate"
+              style={{ color: "var(--text)" }}
+            >
               {user?.fullName}
             </div>
             <div className={`text-xs font-semibold badge-${user?.role}`}>
@@ -127,10 +152,11 @@ export default function Sidebar() {
       </nav>
 
       {/* Logout */}
-      <div className="p-3 border-t border-[#1e2740]">
+      <div className="p-3 border-t" style={{ borderColor: "var(--border)" }}>
         <button
           onClick={handleLogout}
-          className="sidebar-link w-full text-red-400 hover:text-red-300 hover:bg-red-500/5"
+          className="sidebar-link w-full"
+          style={{ color: "#ef4444" }}
         >
           <LogOut size={16} />
           <span>Sign Out</span>

@@ -24,17 +24,34 @@ export class DtrService {
     return ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"][date.getDay()];
   }
 
-  /**
-   * FIX: Build today's date as a UTC midnight value that matches
-   * what the local calendar day IS — avoids the UTC-offset bug where
-   * Mar 22 08:00 PH time becomes Mar 21 in the DB.
-   *
-   * We use Date.UTC with LOCAL year/month/day values so the stored
-   * date is always the correct calendar day regardless of timezone.
-   */
   private getTodayUTC(): Date {
     const now = new Date();
     return new Date(Date.UTC(now.getFullYear(), now.getMonth(), now.getDate()));
+  }
+
+  /** Notify the supervisor assigned to this OJT */
+  private async notifySupervisor(
+    ojtUserId: number,
+    title: string,
+    body: string,
+    type: string,
+  ) {
+    try {
+      const assignment = await this.prisma.supervisorAssignment.findUnique({
+        where: { ojtId: ojtUserId },
+      });
+      if (!assignment) return;
+      await this.prisma.notification.create({
+        data: {
+          userId: assignment.supervisorId,
+          type,
+          title,
+          body,
+        },
+      });
+    } catch {
+      /* non-critical — don't throw */
+    }
   }
 
   async clockIn(
@@ -43,10 +60,9 @@ export class DtrService {
     notes: string,
   ) {
     const now = new Date();
-    const dateOnly = this.getTodayUTC(); // FIX: correct local-day date stored as UTC
+    const dateOnly = this.getTodayUTC();
     const dayName = this.getDayName(now);
 
-    // REQUIRE schedule — no schedule = clock-in disabled
     const ojtSchedule = await this.prisma.ojtSchedule.findUnique({
       where: { ojtId: userId },
       include: { schedule: true },
@@ -54,22 +70,20 @@ export class DtrService {
 
     if (!ojtSchedule || !ojtSchedule.schedule) {
       throw new BadRequestException(
-        "No schedule assigned. You cannot clock in until your supervisor assigns a schedule to you.",
+        "No schedule assigned. Contact your supervisor.",
       );
     }
 
     const schedule = ojtSchedule.schedule;
-    const periodType = schedule.periodType; // 'one_period' | 'two_period'
+    const periodType = schedule.periodType;
     const workDays: string[] = JSON.parse(schedule.workDays);
 
-    // Validate work day
     if (!workDays.includes(dayName)) {
       throw new BadRequestException(
-        `Today (${dayName}) is not a work day. Your schedule: ${workDays.join(", ")}.`,
+        `Today (${dayName}) is not a work day. Schedule: ${workDays.join(", ")}.`,
       );
     }
 
-    // Determine late/present status
     const amInTime = this.parseTimeToday(schedule.amIn);
     const graceCutoff = new Date(
       amInTime.getTime() + schedule.graceMinutes * 60000,
@@ -80,12 +94,19 @@ export class DtrService {
       ? `/uploads/selfies/${selfieFile.filename}`
       : null;
 
-    // Check existing DTR for today
     const existing = await this.prisma.dtr.findUnique({
       where: { userId_date: { userId, date: dateOnly } },
     });
 
-    // ── FIRST CLOCK-IN (AM In) ──────────────────────────────────
+    // Get OJT name for notification
+    const ojtUser = await this.prisma.user.findUnique({
+      where: { id: userId },
+    });
+    const timeStr = now.toLocaleTimeString("en-PH", {
+      hour: "2-digit",
+      minute: "2-digit",
+    });
+
     if (!existing) {
       const dtr = await this.prisma.dtr.create({
         data: {
@@ -107,6 +128,13 @@ export class DtrService {
           targetType: "dtr",
         },
       });
+      // Notify supervisor
+      await this.notifySupervisor(
+        userId,
+        `${ojtUser?.fullName} clocked in`,
+        `${status === "late" ? "⚠️ Late clock-in" : "✅ On time"} at ${timeStr}`,
+        "DTR_IN",
+      );
       return {
         message: "Clock-in (AM) recorded",
         status,
@@ -116,22 +144,21 @@ export class DtrService {
       };
     }
 
-    // ── SECOND CLOCK-IN (PM In) — two_period only ───────────────
     if (periodType === "two_period") {
-      if (!existing.amOut) {
-        throw new BadRequestException(
-          "Please clock out AM first before PM clock-in.",
-        );
-      }
-      if (existing.pmIn) {
-        throw new BadRequestException(
-          "Already clocked in for PM. Please clock out.",
-        );
-      }
+      if (!existing.amOut)
+        throw new BadRequestException("Please clock out AM first.");
+      if (existing.pmIn)
+        throw new BadRequestException("Already clocked in for PM.");
       await this.prisma.dtr.update({
         where: { id: existing.id },
         data: { pmIn: now, pmInSelfie: selfiePath },
       });
+      await this.notifySupervisor(
+        userId,
+        `${ojtUser?.fullName} clocked in (PM)`,
+        `PM clock-in at ${timeStr}`,
+        "DTR_IN",
+      );
       return {
         message: "Clock-in (PM) recorded",
         time: now,
@@ -140,10 +167,9 @@ export class DtrService {
       };
     }
 
-    // ── ONE PERIOD: already clocked in ──────────────────────────
     throw new BadRequestException(
       existing.amOut
-        ? "Already completed your time record for today (1-period schedule)."
+        ? "Already completed your record today."
         : "Already clocked in. Please clock out first.",
     );
   }
@@ -154,9 +180,8 @@ export class DtrService {
     notes: string,
   ) {
     const now = new Date();
-    const dateOnly = this.getTodayUTC(); // FIX: same UTC-normalized date
+    const dateOnly = this.getTodayUTC();
 
-    // REQUIRE schedule
     const ojtSchedule = await this.prisma.ojtSchedule.findUnique({
       where: { ojtId: userId },
       include: { schedule: true },
@@ -164,7 +189,7 @@ export class DtrService {
 
     if (!ojtSchedule || !ojtSchedule.schedule) {
       throw new BadRequestException(
-        "No schedule assigned. You cannot clock out until your supervisor assigns a schedule.",
+        "No schedule assigned. Contact your supervisor.",
       );
     }
 
@@ -174,21 +199,22 @@ export class DtrService {
     const existing = await this.prisma.dtr.findUnique({
       where: { userId_date: { userId, date: dateOnly } },
     });
-
-    if (!existing) {
-      throw new BadRequestException(
-        "No clock-in found for today. Please clock in first.",
-      );
-    }
+    if (!existing)
+      throw new BadRequestException("No clock-in found for today.");
 
     const selfiePath = selfieFile
       ? `/uploads/selfies/${selfieFile.filename}`
       : null;
+    const ojtUser = await this.prisma.user.findUnique({
+      where: { id: userId },
+    });
+    const timeStr = now.toLocaleTimeString("en-PH", {
+      hour: "2-digit",
+      minute: "2-digit",
+    });
 
-    // ── AM CLOCK OUT ─────────────────────────────────────────────
     if (!existing.amOut) {
       const amMinutes = this.computeMinutes(existing.amIn, now);
-      // For one_period, this completes the day
       const isDayComplete = periodType === "one_period";
       await this.prisma.dtr.update({
         where: { id: existing.id },
@@ -208,33 +234,39 @@ export class DtrService {
           targetType: "dtr",
         },
       });
+
+      if (isDayComplete) {
+        await this.notifySupervisor(
+          userId,
+          `${ojtUser?.fullName} clocked out`,
+          `✅ Day complete at ${timeStr} — ${this.fmt(amMinutes)} rendered`,
+          "DTR_OUT",
+        );
+      } else {
+        await this.notifySupervisor(
+          userId,
+          `${ojtUser?.fullName} clocked out (AM)`,
+          `AM clock-out at ${timeStr}`,
+          "DTR_OUT",
+        );
+      }
       return {
         message: isDayComplete
-          ? "Clock-out recorded. Day complete! (1-period)"
+          ? "Clock-out recorded. Day complete!"
           : "AM Clock-out recorded",
         minutesWorked: amMinutes,
         isDayComplete,
         periodType,
-        nextAction: isDayComplete ? "done" : "clock-in-pm",
       };
     }
 
-    // ── ONE PERIOD: already clocked out ─────────────────────────
-    if (periodType === "one_period") {
-      throw new BadRequestException(
-        "Already completed your time record today (1-period schedule).",
-      );
-    }
+    if (periodType === "one_period")
+      throw new BadRequestException("Already completed today.");
 
-    // ── PM CLOCK OUT (two_period only) ───────────────────────────
-    if (!existing.pmIn) {
-      throw new BadRequestException(
-        "Please clock in for PM before clocking out.",
-      );
-    }
-    if (existing.pmOut) {
-      throw new BadRequestException("Already clocked out PM. Day is complete.");
-    }
+    if (!existing.pmIn)
+      throw new BadRequestException("Please clock in for PM first.");
+    if (existing.pmOut)
+      throw new BadRequestException("Already clocked out PM.");
 
     const pmMinutes = this.computeMinutes(existing.pmIn, now);
     const amMinutes = existing.amOut
@@ -244,11 +276,7 @@ export class DtrService {
 
     await this.prisma.dtr.update({
       where: { id: existing.id },
-      data: {
-        pmOut: now,
-        pmOutSelfie: selfiePath,
-        totalMinutes: total,
-      },
+      data: { pmOut: now, pmOutSelfie: selfiePath, totalMinutes: total },
     });
     await this.prisma.auditLog.create({
       data: {
@@ -259,22 +287,29 @@ export class DtrService {
         targetType: "dtr",
       },
     });
+    await this.notifySupervisor(
+      userId,
+      `${ojtUser?.fullName} clocked out (PM)`,
+      `✅ Day complete at ${timeStr} — ${this.fmt(total)} total rendered`,
+      "DTR_OUT",
+    );
     return {
-      message: "PM Clock-out recorded. Day complete!",
+      message: "PM Clock-out. Day complete!",
       totalMinutes: total,
       isDayComplete: true,
       periodType,
-      nextAction: "done",
     };
+  }
+
+  private fmt(min: number) {
+    return `${Math.floor(min / 60)}h ${min % 60}m`;
   }
 
   async getMyDtr(userId: number, month?: string, year?: string) {
     const y = year ? +year : new Date().getFullYear();
     const m = month ? +month - 1 : new Date().getMonth();
-    // Use UTC dates for range query to match stored values
     const from = new Date(Date.UTC(y, m, 1));
     const to = new Date(Date.UTC(y, m + 1, 0, 23, 59, 59));
-
     const records = await this.prisma.dtr.findMany({
       where: { userId, date: { gte: from, lte: to } },
       orderBy: { date: "asc" },
@@ -330,29 +365,22 @@ export class DtrService {
   async getSummary(userId: number) {
     const records = await this.prisma.dtr.findMany({ where: { userId } });
     const totalMinutes = records.reduce((s, r) => s + (r.totalMinutes || 0), 0);
-    const present = records.filter((r) => r.status === "present").length;
-    const late = records.filter((r) => r.status === "late").length;
-    const halfDay = records.filter((r) => r.status === "half_day").length;
     return {
       totalDays: records.length,
       totalMinutes,
       totalHours: +(totalMinutes / 60).toFixed(2),
-      present,
-      late,
-      halfDay,
+      present: records.filter((r) => r.status === "present").length,
+      late: records.filter((r) => r.status === "late").length,
+      halfDay: records.filter((r) => r.status === "half_day").length,
     };
   }
 
-  // Return the OJT's current schedule info (used by frontend to know period type)
   async getMySchedule(userId: number) {
-    const ojtSchedule = await this.prisma.ojtSchedule.findUnique({
+    const s = await this.prisma.ojtSchedule.findUnique({
       where: { ojtId: userId },
       include: { schedule: true },
     });
-    if (!ojtSchedule) return null;
-    return {
-      ...ojtSchedule.schedule,
-      workDays: JSON.parse(ojtSchedule.schedule.workDays),
-    };
+    if (!s) return null;
+    return { ...s.schedule, workDays: JSON.parse(s.schedule.workDays) };
   }
 }

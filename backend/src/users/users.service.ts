@@ -115,9 +115,10 @@ export class UsersService {
     if (!user) throw new NotFoundException("User not found");
     if (requesterRole === "ojt" && requesterId !== id)
       throw new ForbiddenException();
+    const { password: _pw, ...updateData } = dto as any;
     const updated = await this.prisma.user.update({
       where: { id },
-      data: dto,
+      data: updateData,
       select: USER_SELECT,
     });
     await this.prisma.auditLog.create({
@@ -246,5 +247,27 @@ export class UsersService {
       totalUsers,
       recentUsers,
     };
+  }
+
+  async changePassword(id: number, newPassword: string, adminId: number) {
+    const user = await this.prisma.user.findFirst({
+      where: { id, deletedAt: null },
+    });
+    if (!user) throw new NotFoundException("User not found");
+    const hash = await bcrypt.hash(newPassword, 12);
+    await this.prisma.user.update({
+      where: { id },
+      data: { passwordHash: hash },
+    });
+    await this.prisma.auditLog.create({
+      data: {
+        userId: adminId,
+        action: "CHANGE_PASSWORD",
+        module: "users",
+        targetId: id,
+        targetType: "user",
+      },
+    });
+    return { message: "Password updated successfully" };
   }
 }

@@ -74,13 +74,13 @@ export class DtrController {
   }
 
   @Get("me/schedule")
-  @Roles("ojt")
+  @Roles("ojt", "supervisor", "admin")
   getMySchedule(@CurrentUser("id") userId: number) {
     return this.dtrService.getMySchedule(userId);
   }
 
   @Get("me")
-  @Roles("ojt")
+  @Roles("ojt", "supervisor", "admin")
   getMyDtr(
     @CurrentUser("id") userId: number,
     @Query("month") month: string,
@@ -90,13 +90,13 @@ export class DtrController {
   }
 
   @Get("me/summary")
-  @Roles("ojt")
+  @Roles("ojt", "supervisor", "admin")
   getSummary(@CurrentUser("id") userId: number) {
     return this.dtrService.getSummary(userId);
   }
 
   @Get()
-  @Roles("admin")
+  @Roles("admin", "supervisor")
   getAll(@Query() query: any) {
     return this.dtrService.getAllDtr(query);
   }

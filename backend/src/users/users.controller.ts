@@ -11,6 +11,7 @@ import {
   UseInterceptors,
   UploadedFile,
   ParseIntPipe,
+  BadRequestException,
 } from "@nestjs/common";
 import { FileInterceptor } from "@nestjs/platform-express";
 import { diskStorage } from "multer";
@@ -134,5 +135,18 @@ export class UsersController {
       id,
       `/uploads/avatars/${file.filename}`,
     );
+  }
+
+  @Patch(":id/password")
+  @Roles("admin")
+  changePassword(
+    @Param("id", ParseIntPipe) id: number,
+    @Body() body: { password: string },
+    @CurrentUser("id") adminId: number,
+  ) {
+    if (!body?.password || body.password.length < 8) {
+      throw new BadRequestException("Password must be at least 8 characters");
+    }
+    return this.usersService.changePassword(id, body.password, adminId);
   }
 }

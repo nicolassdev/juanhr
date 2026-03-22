@@ -14,11 +14,10 @@ import {
   CalendarDays,
 } from "lucide-react";
 import toast from "react-hot-toast";
+import { downloadExcelMe, downloadPdfMe } from "@/lib/download";
+import { useAuthStore } from "@/stores/auth.store";
 
 type Step = "idle" | "camera" | "preview" | "submitting" | "done";
-
-const API_BASE =
-  process.env.NEXT_PUBLIC_API_URL || "http://localhost:3001/api/v1";
 
 // Compare dates in LOCAL timezone — avoids UTC offset bugs
 function isToday(dateStr: string): boolean {
@@ -98,6 +97,7 @@ function getNextAction(dtr: any | null, periodType: PeriodType): NextAction {
 }
 
 export default function OjtDtrPage() {
+  const { user } = useAuthStore();
   const webcamRef = useRef<Webcam>(null);
   const [step, setStep] = useState<Step>("idle");
   const [capturedImg, setCapturedImg] = useState<string | null>(null);
@@ -606,22 +606,38 @@ export default function OjtDtrPage() {
               )}
             </div>
             <div className="flex gap-2 mt-3 flex-wrap">
-              <a
-                href={`${API_BASE}/dtr/export/excel/me?month=${reportMonth}&year=${reportYear}`}
-                target="_blank"
-                rel="noopener"
+              <button
+                onClick={async () => {
+                  try {
+                    await downloadExcelMe(
+                      user?.fullName || "OJT",
+                      reportMonth,
+                      reportYear,
+                    );
+                  } catch {
+                    toast.error("Download failed");
+                  }
+                }}
                 className="btn-success flex items-center gap-1.5 text-xs px-3 py-2"
               >
                 <FileSpreadsheet size={13} /> Excel
-              </a>
-              <a
-                href={`${API_BASE}/dtr/export/pdf/me?month=${reportMonth}&year=${reportYear}`}
-                target="_blank"
-                rel="noopener"
+              </button>
+              <button
+                onClick={async () => {
+                  try {
+                    await downloadPdfMe(
+                      user?.fullName || "OJT",
+                      reportMonth,
+                      reportYear,
+                    );
+                  } catch {
+                    toast.error("Download failed");
+                  }
+                }}
                 className="btn-danger flex items-center gap-1.5 text-xs px-3 py-2"
               >
                 <FileText size={13} /> PDF
-              </a>
+              </button>
               <button
                 onClick={() => window.print()}
                 className="btn-outline flex items-center gap-1.5 text-xs px-3 py-2"
