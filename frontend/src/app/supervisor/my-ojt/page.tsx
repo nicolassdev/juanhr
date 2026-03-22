@@ -1,23 +1,30 @@
 "use client";
-import { useEffect, useRef, useState, useCallback } from "react";
+import { useEffect, useState } from "react";
 import DashboardLayout from "@/components/layout/DashboardLayout";
 import api from "@/lib/api";
-import Webcam from "react-webcam";
+import { downloadExcel, downloadPdf } from "@/lib/download";
+import toast from "react-hot-toast";
 import {
-  Camera,
-  CheckCircle,
-  RefreshCw,
+  X,
   FileSpreadsheet,
   FileText,
   Printer,
-  AlertTriangle,
   CalendarDays,
+  Clock,
+  CheckCircle,
+  AlertTriangle,
+  User,
+  BookOpen,
+  GraduationCap,
+  Building2,
+  Search,
+  ChevronDown,
+  ChevronUp,
 } from "lucide-react";
-import toast from "react-hot-toast";
 
-type Step = "idle" | "camera" | "preview" | "submitting" | "done";
+const API = process.env.NEXT_PUBLIC_API_URL || "http://localhost:3001/api/v1";
+const FILE_API = API.replace("/api/v1", "");
 
-// Compare dates in LOCAL timezone — avoids UTC offset bugs
 function isToday(dateStr: string): boolean {
   if (!dateStr) return false;
   const d = new Date(dateStr);
@@ -29,178 +36,81 @@ function isToday(dateStr: string): boolean {
   );
 }
 
-type PeriodType = "one_period" | "two_period";
+export default function SupervisorMyOjtPage() {
+  const [ojts, setOjts] = useState<any[]>([]);
+  const [schedules, setSchedules] = useState<any[]>([]);
+  const [search, setSearch] = useState("");
+  const [selectedOjt, setSelectedOjt] = useState<any>(null);
+  const [panelOpen, setPanelOpen] = useState(false);
 
-interface Schedule {
-  id: number;
-  name: string;
-  periodType: PeriodType;
-  amIn: string;
-  amOut: string;
-  pmIn?: string;
-  pmOut?: string;
-  workDays: string[];
-  graceMinutes: number;
-}
-
-interface NextAction {
-  action: "clock-in" | "clock-out";
-  label: string;
-  step: "am-in" | "am-out" | "pm-in" | "pm-out";
-  isDone: boolean;
-}
-
-function getNextAction(dtr: any | null, periodType: PeriodType): NextAction {
-  if (!dtr || !dtr.amIn)
-    return {
-      action: "clock-in",
-      label: "Clock In",
-      step: "am-in",
-      isDone: false,
-    };
-  if (dtr.amIn && !dtr.amOut)
-    return {
-      action: "clock-out",
-      label: "Clock Out",
-      step: "am-out",
-      isDone: false,
-    };
-  if (periodType === "one_period")
-    return {
-      action: "clock-out",
-      label: "Day Complete",
-      step: "am-out",
-      isDone: true,
-    };
-  if (!dtr.pmIn)
-    return {
-      action: "clock-in",
-      label: "Clock In (PM)",
-      step: "pm-in",
-      isDone: false,
-    };
-  if (!dtr.pmOut)
-    return {
-      action: "clock-out",
-      label: "Clock Out (PM)",
-      step: "pm-out",
-      isDone: false,
-    };
-  return {
-    action: "clock-out",
-    label: "Day Complete",
-    step: "pm-out",
-    isDone: true,
-  };
-}
-
-export default function OjtDtrPage() {
-  const webcamRef = useRef<Webcam>(null);
-  const [step, setStep] = useState<Step>("idle");
-  const [capturedImg, setCapturedImg] = useState<string | null>(null);
+  // DTR panel state
+  const [dtr, setDtr] = useState<any[]>([]);
+  const [summary, setSummary] = useState<any>(null);
   const [todayDtr, setTodayDtr] = useState<any>(null);
-  const [history, setHistory] = useState<any[]>([]);
-  const [schedule, setSchedule] = useState<Schedule | null>(null);
-  const [scheduleLoading, setScheduleLoading] = useState(true);
-  const [notes, setNotes] = useState("");
-  const [cameraError, setCameraError] = useState(false);
-
-  // Report state
-  const [reportMonth, setReportMonth] = useState(
+  const [month, setMonth] = useState(
     String(new Date().getMonth() + 1).padStart(2, "0"),
   );
-  const [reportYear, setReportYear] = useState(
-    String(new Date().getFullYear()),
-  );
-  const [reportData, setReportData] = useState<any>(null);
-  const [showReport, setShowReport] = useState(false);
+  const [year, setYear] = useState(String(new Date().getFullYear()));
+  const [ojtSchedule, setOjtSchedule] = useState<any>(null);
+  const [assigningSchedule, setAssigningSchedule] = useState(false);
+  const [selectedScheduleId, setSelectedScheduleId] = useState("");
+  const [selfiePreview, setSelfiePreview] = useState<string | null>(null);
+  const [expandedRecord, setExpandedRecord] = useState<number | null>(null);
 
-  const loadSchedule = async () => {
-    setScheduleLoading(true);
-    try {
-      const { data } = await api.get("/dtr/me/schedule");
-      setSchedule(data);
-    } catch {
-      setSchedule(null);
-    } finally {
-      setScheduleLoading(false);
-    }
-  };
+  useEffect(() => {
+    api
+      .get("/assignments/my-ojt")
+      .then(({ data }) => setOjts(data))
+      .catch(() => {});
+    api
+      .get("/schedules")
+      .then(({ data }) => setSchedules(data))
+      .catch(() => {});
+  }, []);
 
-  const loadDtr = async () => {
+  const loadOjtData = async (ojtId: number) => {
     try {
-      const now = new Date();
-      const { data } = await api.get("/dtr/me", {
-        params: { month: now.getMonth() + 1, year: now.getFullYear() },
-      });
-      const records: any[] = data.records || [];
-      setTodayDtr(records.find((r) => isToday(r.date)) || null);
-      setHistory(records);
+      const [dtrRes, sumRes, schRes] = await Promise.allSettled([
+        api.get(`/dtr/ojt/${ojtId}`, { params: { month, year } }),
+        api.get(`/dtr/ojt/${ojtId}/summary`),
+        api.get(`/schedules/ojt/${ojtId}`),
+      ]);
+      if (dtrRes.status === "fulfilled") {
+        const records = dtrRes.value.data.records || [];
+        setDtr(records);
+        setTodayDtr(records.find((r: any) => isToday(r.date)) || null);
+      }
+      if (sumRes.status === "fulfilled") setSummary(sumRes.value.data);
+      if (schRes.status === "fulfilled") setOjtSchedule(schRes.value.data);
     } catch {}
   };
 
+  const openPanel = (ojt: any) => {
+    setSelectedOjt(ojt);
+    setPanelOpen(true);
+    loadOjtData(ojt.id);
+  };
+
+  const closePanel = () => {
+    setPanelOpen(false);
+    setTimeout(() => setSelectedOjt(null), 300);
+  };
+
   useEffect(() => {
-    loadSchedule();
-    loadDtr();
-  }, []);
+    if (selectedOjt) loadOjtData(selectedOjt.id);
+  }, [month, year]);
 
-  const periodType: PeriodType = schedule?.periodType || "one_period";
-  const {
-    action,
-    label: actionLabel,
-    step: actionStep,
-    isDone,
-  } = getNextAction(todayDtr, periodType);
-  const hasSchedule = !!schedule;
-
-  const capture = useCallback(() => {
-    const img = webcamRef.current?.getScreenshot();
-    if (img) {
-      setCapturedImg(img);
-      setStep("preview");
-    }
-  }, [webcamRef]);
-
-  const base64ToBlob = (b64: string): Blob => {
-    const [, d] = b64.split(",");
-    const mime = b64.split(";")[0].split(":")[1];
-    const bytes = atob(d);
-    const arr = new Uint8Array(bytes.length);
-    for (let i = 0; i < bytes.length; i++) arr[i] = bytes.charCodeAt(i);
-    return new Blob([arr], { type: mime });
-  };
-
-  const handleSubmit = async () => {
-    if (!capturedImg) return;
-    setStep("submitting");
+  const assignSchedule = async () => {
+    if (!selectedScheduleId || !selectedOjt) return;
     try {
-      const fd = new FormData();
-      fd.append("selfie", base64ToBlob(capturedImg), "selfie.jpg");
-      if (notes) fd.append("notes", notes);
-      await api.post(`/dtr/${action}`, fd, {
-        headers: { "Content-Type": "multipart/form-data" },
+      await api.post("/schedules/assign", {
+        ojtId: Number(selectedOjt.id),
+        scheduleId: Number(selectedScheduleId),
       });
-      toast.success(`✅ ${actionLabel} recorded!`);
-      setStep("done");
-      setCapturedImg(null);
-      setNotes("");
-      await loadDtr();
-      setTimeout(() => setStep("idle"), 1800);
-    } catch (err: any) {
-      toast.error(err.response?.data?.message || "Failed. Try again.");
-      setStep("idle");
-    }
-  };
-
-  const loadReport = async () => {
-    try {
-      const { data } = await api.get("/dtr/me", {
-        params: { month: +reportMonth, year: +reportYear },
-      });
-      setReportData(data);
-      setShowReport(true);
+      setAssigningSchedule(false);
+      loadOjtData(selectedOjt.id);
     } catch {
-      toast.error("Failed to load report");
+      alert("Failed to assign schedule");
     }
   };
 
@@ -218,566 +128,825 @@ export default function OjtDtrPage() {
       dt.getUTCFullYear(),
       dt.getUTCMonth(),
       dt.getUTCDate(),
-    ).toLocaleDateString("en-PH", { month: "short", day: "numeric" });
+    ).toLocaleDateString("en-PH", {
+      weekday: "short",
+      month: "short",
+      day: "numeric",
+    });
   };
   const fmtHrs = (min: number) =>
     min ? `${Math.floor(min / 60)}h ${min % 60}m` : "—";
 
-  // Build the time slot boxes depending on period type
-  const timeBoxes =
-    periodType === "one_period"
-      ? [
-          {
-            label: "Clock In",
-            val: todayDtr?.amIn,
-            color: "text-cyan-400",
-            border: "border-cyan-400/20",
-            isNext: actionStep === "am-in",
-          },
-          {
-            label: "Clock Out",
-            val: todayDtr?.amOut,
-            color: "text-violet-400",
-            border: "border-violet-400/20",
-            isNext: actionStep === "am-out",
-          },
-        ]
-      : [
-          {
-            label: "AM In",
-            val: todayDtr?.amIn,
-            color: "text-cyan-400",
-            border: "border-cyan-400/20",
-            isNext: actionStep === "am-in",
-          },
-          {
-            label: "AM Out",
-            val: todayDtr?.amOut,
-            color: "text-violet-400",
-            border: "border-violet-400/20",
-            isNext: actionStep === "am-out",
-          },
-          {
-            label: "PM In",
-            val: todayDtr?.pmIn,
-            color: "text-orange-400",
-            border: "border-orange-400/20",
-            isNext: actionStep === "pm-in",
-          },
-          {
-            label: "PM Out",
-            val: todayDtr?.pmOut,
-            color: "text-emerald-400",
-            border: "border-emerald-400/20",
-            isNext: actionStep === "pm-out",
-          },
-        ];
+  const filtered = ojts.filter(
+    (a) =>
+      !search || a.ojt?.fullName?.toLowerCase().includes(search.toLowerCase()),
+  );
 
-  const displayHistory = showReport ? reportData?.records || [] : history;
+  const periodType = ojtSchedule?.schedule?.periodType || "two_period";
+
+  const getTodayStatus = (dtr: any) => {
+    if (!dtr) return { label: "No record", color: "var(--muted)", dot: "⚪" };
+    if (dtr.amIn && !dtr.amOut)
+      return { label: "Clocked In", color: "#22c55e", dot: "🟢" };
+    if (dtr.amOut && periodType === "one_period")
+      return { label: "Day Complete", color: "var(--accent)", dot: "✅" };
+    if (dtr.amOut && !dtr.pmIn)
+      return { label: "AM Done", color: "#f59e0b", dot: "🟡" };
+    if (dtr.pmIn && !dtr.pmOut)
+      return { label: "PM In Progress", color: "#f97316", dot: "🟠" };
+    if (dtr.pmOut)
+      return { label: "Day Complete", color: "var(--accent)", dot: "✅" };
+    return { label: "No record", color: "var(--muted)", dot: "⚪" };
+  };
 
   return (
-    <DashboardLayout title="Daily Time Record" allowedRoles={["ojt"]}>
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        {/* LEFT — Clock Panel */}
-        <div className="space-y-4">
-          {/* Schedule Info Banner */}
-          {scheduleLoading ? (
-            <div className="card flex items-center gap-3 border-[#1e2740]">
-              <div className="w-4 h-4 border border-cyan-400 border-t-transparent rounded-full animate-spin" />
-              <span className="text-slate-500 text-sm">
-                Loading schedule...
-              </span>
-            </div>
-          ) : !hasSchedule ? (
-            <div className="card border-yellow-400/30 bg-yellow-400/5">
-              <div className="flex items-start gap-3">
-                <AlertTriangle
-                  size={18}
-                  className="text-yellow-400 flex-shrink-0 mt-0.5"
-                />
-                <div>
-                  <div className="font-semibold text-yellow-400 text-sm">
-                    No Schedule Assigned
-                  </div>
-                  <div className="text-slate-400 text-xs mt-1">
-                    You cannot clock in or out until your supervisor assigns a
-                    schedule to you. Please contact your supervisor.
-                  </div>
-                </div>
-              </div>
-            </div>
-          ) : (
-            <div className="card border-cyan-400/20 bg-cyan-400/5">
-              <div className="flex items-start gap-3">
-                <CalendarDays
-                  size={16}
-                  className="text-cyan-400 flex-shrink-0 mt-0.5"
-                />
-                <div className="flex-1">
-                  <div className="font-semibold text-white text-sm">
-                    {schedule.name}
-                  </div>
-                  <div className="text-xs text-slate-400 mt-1 flex flex-wrap gap-x-4 gap-y-1">
-                    <span>
-                      {periodType === "one_period" ? "1 Period" : "2 Period"} ·{" "}
-                      {schedule.amIn}–{schedule.amOut}
-                      {schedule.pmIn && ` / ${schedule.pmIn}–${schedule.pmOut}`}
-                    </span>
-                    <span className="text-slate-500">
-                      {schedule.workDays.join(", ")}
-                    </span>
-                    <span className="text-slate-500">
-                      Grace: {schedule.graceMinutes} min
-                    </span>
-                  </div>
-                </div>
-              </div>
-            </div>
-          )}
-
-          {/* Today's Time Record boxes */}
-          <div className="card">
-            <h2 className="font-bold text-white mb-4 text-sm">
-              Today's Time Record
-            </h2>
-            <div
-              className={`grid gap-3 ${periodType === "one_period" ? "grid-cols-2" : "grid-cols-2"}`}
-            >
-              {timeBoxes.map(({ label, val, color, border, isNext }) => (
-                <div
-                  key={label}
-                  className={`rounded-xl p-3 border ${border} ${val ? "bg-[#0e1220]" : isNext && hasSchedule ? "bg-[#0e1220] border-dashed" : "bg-[#090d18]"}`}
-                >
-                  <div className="text-xs text-slate-500 mb-1 flex items-center gap-1">
-                    {label}
-                    {isNext && hasSchedule && !isDone && (
-                      <span className="text-[10px] text-cyan-400 animate-pulse">
-                        ● next
-                      </span>
-                    )}
-                  </div>
-                  <div
-                    className={`font-mono font-bold text-sm ${val ? color : "text-slate-700"}`}
-                  >
-                    {fmtTime(val)}
-                  </div>
-                </div>
-              ))}
-            </div>
-            {todayDtr && (
-              <div className="mt-3 flex items-center gap-2 flex-wrap">
-                <span className={`badge badge-${todayDtr.status}`}>
-                  {todayDtr.status}
-                </span>
-                {todayDtr.totalMinutes > 0 && (
-                  <span className="text-xs text-slate-500">
-                    {fmtHrs(todayDtr.totalMinutes)} rendered
-                  </span>
-                )}
-              </div>
-            )}
+    <DashboardLayout title="My OJT Employees" allowedRoles={["supervisor"]}>
+      <div className="space-y-5">
+        {/* Search bar */}
+        <div className="flex items-center gap-3">
+          <div className="relative flex-1 max-w-xs">
+            <Search
+              size={14}
+              className="absolute left-3 top-1/2 -translate-y-1/2"
+              style={{ color: "var(--muted)" }}
+            />
+            <input
+              className="input pl-9"
+              placeholder="Search employee..."
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+            />
           </div>
-
-          {/* Clock Action Panel */}
-          <div className="card">
-            {/* NO SCHEDULE — disabled state */}
-            {!hasSchedule && !scheduleLoading && (
-              <div className="text-center py-8">
-                <AlertTriangle
-                  size={40}
-                  className="text-yellow-400 mx-auto mb-3 opacity-60"
-                />
-                <p className="text-slate-400 font-semibold">
-                  Clock-in Disabled
-                </p>
-                <p className="text-slate-600 text-sm mt-1">
-                  Waiting for supervisor to assign a schedule.
-                </p>
-              </div>
-            )}
-
-            {/* HAS SCHEDULE — normal flow */}
-            {hasSchedule && (
-              <>
-                {step === "idle" && (
-                  <div className="text-center">
-                    {isDone ? (
-                      <div className="py-6">
-                        <CheckCircle
-                          size={48}
-                          className="text-emerald-400 mx-auto mb-3"
-                        />
-                        <p className="text-white font-bold text-lg">
-                          Day Complete! 🎉
-                        </p>
-                        <p className="text-slate-500 text-sm mt-1">
-                          {periodType === "one_period"
-                            ? "Your 1-period record is done."
-                            : "Both periods complete."}
-                        </p>
-                      </div>
-                    ) : (
-                      <>
-                        <div
-                          className={`text-5xl font-black mb-3 ${action === "clock-in" ? "text-cyan-400" : "text-violet-400"}`}
-                        >
-                          {action === "clock-in" ? "🟢" : "🔴"}
-                        </div>
-                        <h3 className="font-bold text-white text-xl mb-1">
-                          {actionLabel}
-                        </h3>
-                        <p className="text-slate-500 text-sm mb-5">
-                          {action === "clock-in"
-                            ? "Take a selfie to record your arrival."
-                            : "Take a selfie to record your departure."}
-                        </p>
-                        <button
-                          onClick={() => {
-                            setCameraError(false);
-                            setStep("camera");
-                          }}
-                          className="btn-primary flex items-center gap-2 mx-auto"
-                        >
-                          <Camera size={16} /> Open Camera
-                        </button>
-                      </>
-                    )}
-                  </div>
-                )}
-
-                {step === "camera" && (
-                  <div className="space-y-3">
-                    <div className="text-sm font-semibold text-white mb-2">
-                      📸 {actionLabel} — smile!
-                    </div>
-                    {cameraError ? (
-                      <div className="bg-red-500/10 border border-red-500/30 rounded-xl p-4 text-center text-red-400 text-sm">
-                        Camera unavailable. Please allow camera access in your
-                        browser settings.
-                      </div>
-                    ) : (
-                      <div className="rounded-xl overflow-hidden border border-[#1e2740]">
-                        <Webcam
-                          ref={webcamRef}
-                          screenshotFormat="image/jpeg"
-                          className="w-full"
-                          onUserMediaError={() => setCameraError(true)}
-                          mirrored
-                        />
-                      </div>
-                    )}
-                    <div>
-                      <label className="label">Notes (optional)</label>
-                      <input
-                        className="input"
-                        placeholder="Any remarks..."
-                        value={notes}
-                        onChange={(e) => setNotes(e.target.value)}
-                      />
-                    </div>
-                    <div className="flex gap-2">
-                      <button
-                        onClick={() => setStep("idle")}
-                        className="btn-outline flex-1"
-                      >
-                        Cancel
-                      </button>
-                      <button
-                        onClick={capture}
-                        disabled={cameraError}
-                        className="btn-primary flex-1 flex items-center justify-center gap-2"
-                      >
-                        <Camera size={15} /> Capture
-                      </button>
-                    </div>
-                  </div>
-                )}
-
-                {step === "preview" && capturedImg && (
-                  <div className="space-y-3">
-                    <div className="text-sm font-semibold text-white mb-2">
-                      Preview — looks good?
-                    </div>
-                    <img
-                      src={capturedImg}
-                      alt="preview"
-                      className="w-full rounded-xl border border-[#1e2740]"
-                    />
-                    <div className="flex gap-2">
-                      <button
-                        onClick={() => {
-                          setCapturedImg(null);
-                          setStep("camera");
-                        }}
-                        className="btn-outline flex-1 flex items-center justify-center gap-2"
-                      >
-                        <RefreshCw size={14} /> Retake
-                      </button>
-                      <button
-                        onClick={handleSubmit}
-                        className="btn-primary flex-1 flex items-center justify-center gap-2"
-                      >
-                        <CheckCircle size={14} /> Confirm {actionLabel}
-                      </button>
-                    </div>
-                  </div>
-                )}
-
-                {step === "submitting" && (
-                  <div className="text-center py-8">
-                    <div className="w-12 h-12 border-2 border-cyan-400 border-t-transparent rounded-full animate-spin mx-auto mb-3" />
-                    <p className="text-white font-semibold">
-                      Recording {actionLabel}...
-                    </p>
-                  </div>
-                )}
-
-                {step === "done" && (
-                  <div className="text-center py-8">
-                    <CheckCircle
-                      size={48}
-                      className="text-emerald-400 mx-auto mb-3"
-                    />
-                    <p className="text-white font-bold text-lg">Submitted!</p>
-                    <p className="text-slate-500 text-sm mt-1">
-                      {actionLabel} recorded.
-                    </p>
-                  </div>
-                )}
-              </>
-            )}
-          </div>
+          <span className="text-sm" style={{ color: "var(--muted)" }}>
+            {filtered.length} employee{filtered.length !== 1 ? "s" : ""}
+          </span>
         </div>
 
-        {/* RIGHT — DTR History + Report */}
-        <div className="space-y-4">
-          {/* Report Filter */}
-          <div className="card">
-            <h2 className="font-bold text-white text-sm mb-3">DTR Report</h2>
-            <div className="flex flex-wrap gap-2 items-end">
-              <div>
-                <label className="label">Month</label>
-                <select
-                  className="input w-32"
-                  value={reportMonth}
-                  onChange={(e) => setReportMonth(e.target.value)}
-                >
-                  {Array.from({ length: 12 }, (_, i) => (
-                    <option key={i + 1} value={String(i + 1).padStart(2, "0")}>
-                      {new Date(2024, i).toLocaleString("en", {
-                        month: "long",
-                      })}
-                    </option>
-                  ))}
-                </select>
+        {/* Cards grid */}
+        {filtered.length === 0 ? (
+          <div
+            className="card text-center py-16"
+            style={{ color: "var(--muted)" }}
+          >
+            <GraduationCap size={40} className="mx-auto mb-3 opacity-30" />
+            <p>No OJT employees assigned yet.</p>
+          </div>
+        ) : (
+          <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
+            {filtered.map((a: any) => {
+              const ojt = a.ojt;
+              const todStatus = getTodayStatus(null); // placeholder until individual today dtr loaded
+              return (
+                <OjtCard
+                  key={a.id}
+                  ojt={ojt}
+                  assignment={a}
+                  fileApi={FILE_API}
+                  onClick={() => openPanel(ojt)}
+                />
+              );
+            })}
+          </div>
+        )}
+      </div>
+
+      {/* ── SLIDE-IN DETAIL PANEL ── */}
+      {/* Backdrop */}
+      <div
+        className="fixed inset-0 z-40 transition-all duration-300"
+        style={{
+          background: "rgba(0,0,0,0.5)",
+          backdropFilter: "blur(4px)",
+          opacity: panelOpen ? 1 : 0,
+          pointerEvents: panelOpen ? "auto" : "none",
+        }}
+        onClick={closePanel}
+      />
+
+      {/* Panel */}
+      <div
+        className="fixed top-0 right-0 h-full z-50 flex flex-col overflow-hidden"
+        style={{
+          width: "min(680px, 95vw)",
+          background: "var(--card-bg)",
+          borderLeft: "1px solid var(--border)",
+          boxShadow: "-8px 0 32px rgba(0,0,0,0.3)",
+          transform: panelOpen ? "translateX(0)" : "translateX(100%)",
+          transition: "transform 0.3s cubic-bezier(0.4,0,0.2,1)",
+        }}
+      >
+        {selectedOjt && (
+          <>
+            {/* Panel Header */}
+            <div
+              className="flex-shrink-0 p-5 border-b flex items-center gap-4"
+              style={{ borderColor: "var(--border)" }}
+            >
+              {/* Avatar */}
+              <div
+                className="w-14 h-14 rounded-2xl border-2 overflow-hidden flex-shrink-0 flex items-center justify-center"
+                style={{
+                  borderColor: "var(--border)",
+                  background:
+                    "color-mix(in srgb, var(--accent) 12%, transparent)",
+                }}
+              >
+                {selectedOjt.profileImage ? (
+                  <img
+                    src={`${FILE_API}${selectedOjt.profileImage}`}
+                    className="w-full h-full object-cover"
+                    alt=""
+                  />
+                ) : (
+                  <span
+                    className="text-2xl font-black"
+                    style={{ color: "var(--accent)" }}
+                  >
+                    {selectedOjt.fullName?.charAt(0)}
+                  </span>
+                )}
               </div>
-              <div>
-                <label className="label">Year</label>
-                <select
-                  className="input w-24"
-                  value={reportYear}
-                  onChange={(e) => setReportYear(e.target.value)}
+              <div className="flex-1 min-w-0">
+                <h2
+                  className="font-black text-lg truncate"
+                  style={{ color: "var(--text)" }}
                 >
-                  {[2023, 2024, 2025, 2026].map((y) => (
-                    <option key={y} value={y}>
-                      {y}
-                    </option>
-                  ))}
-                </select>
+                  {selectedOjt.fullName}
+                </h2>
+                <div
+                  className="text-xs mt-0.5 flex flex-wrap gap-x-3"
+                  style={{ color: "var(--muted)" }}
+                >
+                  {selectedOjt.email && <span>{selectedOjt.email}</span>}
+                  {selectedOjt.school && <span>🎓 {selectedOjt.school}</span>}
+                  {selectedOjt.course && <span>📚 {selectedOjt.course}</span>}
+                </div>
               </div>
               <button
-                onClick={loadReport}
-                className="btn-outline text-xs px-3 py-2.5"
+                onClick={closePanel}
+                className="p-2 rounded-xl transition-all flex-shrink-0"
+                style={{ color: "var(--muted)" }}
+                onMouseEnter={(e) =>
+                  ((e.currentTarget as HTMLElement).style.color = "var(--text)")
+                }
+                onMouseLeave={(e) =>
+                  ((e.currentTarget as HTMLElement).style.color =
+                    "var(--muted)")
+                }
               >
-                View
+                <X size={20} />
               </button>
-              {showReport && (
+            </div>
+
+            {/* Scrollable content */}
+            <div className="flex-1 overflow-y-auto p-5 space-y-5">
+              {/* Summary stats */}
+              {summary && (
+                <div className="grid grid-cols-3 gap-3">
+                  {[
+                    {
+                      label: "Total Hours",
+                      val: `${summary.totalHours}h`,
+                      color: "var(--accent)",
+                    },
+                    {
+                      label: "Days Present",
+                      val: summary.present,
+                      color: "#22c55e",
+                    },
+                    { label: "Days Late", val: summary.late, color: "#f59e0b" },
+                  ].map(({ label, val, color }) => (
+                    <div key={label} className="card-sm text-center">
+                      <div className="text-2xl font-black" style={{ color }}>
+                        {val}
+                      </div>
+                      <div
+                        className="text-xs mt-1"
+                        style={{ color: "var(--muted)" }}
+                      >
+                        {label}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {/* Schedule info + assign */}
+              <div className="card-sm flex items-center justify-between gap-3 flex-wrap">
+                <div className="flex items-center gap-2">
+                  <CalendarDays size={15} style={{ color: "var(--accent)" }} />
+                  <div>
+                    <div
+                      className="text-xs font-semibold"
+                      style={{ color: "var(--text)" }}
+                    >
+                      {ojtSchedule?.schedule?.name || "No schedule assigned"}
+                    </div>
+                    {ojtSchedule?.schedule && (
+                      <div
+                        className="text-xs"
+                        style={{ color: "var(--muted)" }}
+                      >
+                        {ojtSchedule.schedule.amIn}–{ojtSchedule.schedule.amOut}
+                        {ojtSchedule.schedule.pmIn &&
+                          ` / ${ojtSchedule.schedule.pmIn}–${ojtSchedule.schedule.pmOut}`}
+                        {" · "}
+                        {(() => {
+                          try {
+                            return JSON.parse(
+                              ojtSchedule.schedule.workDays,
+                            ).join(", ");
+                          } catch {
+                            return "";
+                          }
+                        })()}
+                      </div>
+                    )}
+                  </div>
+                </div>
                 <button
                   onClick={() => {
-                    setShowReport(false);
+                    setAssigningSchedule(true);
+                    setSelectedScheduleId(
+                      String(ojtSchedule?.scheduleId || ""),
+                    );
                   }}
-                  className="text-xs text-slate-500 hover:text-cyan-400 px-2 py-2.5"
+                  className="text-xs px-3 py-1.5 rounded-lg border transition-all"
+                  style={{
+                    borderColor: "var(--border)",
+                    color: "var(--muted)",
+                  }}
+                  onMouseEnter={(e) => {
+                    (e.currentTarget as HTMLElement).style.color =
+                      "var(--accent)";
+                    (e.currentTarget as HTMLElement).style.borderColor =
+                      "var(--accent)";
+                  }}
+                  onMouseLeave={(e) => {
+                    (e.currentTarget as HTMLElement).style.color =
+                      "var(--muted)";
+                    (e.currentTarget as HTMLElement).style.borderColor =
+                      "var(--border)";
+                  }}
                 >
-                  ← Current
+                  {ojtSchedule ? "Change" : "Assign Schedule"}
                 </button>
-              )}
-            </div>
-            <div className="flex gap-2 mt-3 flex-wrap">
-              <button
-                onClick={async () => {
-                  try {
-                    await downloadExcelMe(
-                      user?.fullName || "OJT",
-                      reportMonth,
-                      reportYear,
-                    );
-                  } catch {
-                    toast.error("Download failed");
-                  }
-                }}
-                className="btn-success flex items-center gap-1.5 text-xs px-3 py-2"
-              >
-                <FileSpreadsheet size={13} /> Excel
-              </button>
-              <button
-                onClick={async () => {
-                  try {
-                    await downloadPdfMe(
-                      user?.fullName || "OJT",
-                      reportMonth,
-                      reportYear,
-                    );
-                  } catch {
-                    toast.error("Download failed");
-                  }
-                }}
-                className="btn-danger flex items-center gap-1.5 text-xs px-3 py-2"
-              >
-                <FileText size={13} /> PDF
-              </button>
-              <button
-                onClick={() => window.print()}
-                className="btn-outline flex items-center gap-1.5 text-xs px-3 py-2"
-              >
-                <Printer size={13} /> Print
-              </button>
-            </div>
-          </div>
-
-          {/* DTR Table */}
-          <div className="card p-0 overflow-hidden">
-            <div className="px-4 py-3 border-b border-[#1e2740] flex items-center justify-between">
-              <h2 className="font-bold text-white text-sm">
-                {showReport
-                  ? `${new Date(+reportYear, +reportMonth - 1).toLocaleString("en", { month: "long" })} ${reportYear}`
-                  : "This Month's DTR"}
-              </h2>
-            </div>
-            {showReport && reportData && (
-              <div className="px-4 py-2 border-b border-[#1e2740] flex gap-4 flex-wrap text-xs">
-                <span className="text-slate-500">
-                  Total:{" "}
-                  <span className="text-cyan-400 font-bold">
-                    {fmtHrs(reportData.totalMinutes)}
-                  </span>
-                </span>
-                <span className="text-slate-500">
-                  Days:{" "}
-                  <span className="text-white font-bold">
-                    {reportData.records?.length}
-                  </span>
-                </span>
-                <span className="text-slate-500">
-                  Present:{" "}
-                  <span className="text-emerald-400 font-bold">
-                    {
-                      reportData.records?.filter(
-                        (r: any) => r.status === "present",
-                      ).length
-                    }
-                  </span>
-                </span>
-                <span className="text-slate-500">
-                  Late:{" "}
-                  <span className="text-yellow-400 font-bold">
-                    {
-                      reportData.records?.filter(
-                        (r: any) => r.status === "late",
-                      ).length
-                    }
-                  </span>
-                </span>
               </div>
-            )}
-            <div className="overflow-y-auto max-h-[480px]">
-              <table className="w-full text-sm">
-                <thead className="sticky top-0 bg-[#0e1220]">
-                  <tr className="border-b border-[#1e2740]">
-                    <th className="table-header px-3 py-3 text-left">Date</th>
-                    {periodType === "one_period" ? (
-                      <>
-                        <th className="table-header px-3 py-3 text-left">In</th>
-                        <th className="table-header px-3 py-3 text-left">
-                          Out
-                        </th>
-                      </>
-                    ) : (
-                      <>
-                        <th className="table-header px-3 py-3 text-left">
-                          AM In
-                        </th>
-                        <th className="table-header px-3 py-3 text-left">
-                          AM Out
-                        </th>
-                        <th className="table-header px-3 py-3 text-left">
-                          PM In
-                        </th>
-                        <th className="table-header px-3 py-3 text-left">
-                          PM Out
-                        </th>
-                      </>
-                    )}
-                    <th className="table-header px-3 py-3 text-left">Hours</th>
-                    <th className="table-header px-3 py-3 text-left">Status</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {displayHistory.map((r: any) => (
-                    <tr key={r.id} className="table-row">
-                      <td className="px-3 py-2.5 text-slate-300 font-medium text-xs">
-                        {fmtDate(r.date)}
-                      </td>
-                      {periodType === "one_period" ? (
-                        <>
-                          <td className="px-3 py-2.5 text-slate-400 text-xs">
-                            {fmtTime(r.amIn)}
-                          </td>
-                          <td className="px-3 py-2.5 text-slate-400 text-xs">
-                            {fmtTime(r.amOut)}
-                          </td>
-                        </>
-                      ) : (
-                        <>
-                          <td className="px-3 py-2.5 text-slate-400 text-xs">
-                            {fmtTime(r.amIn)}
-                          </td>
-                          <td className="px-3 py-2.5 text-slate-400 text-xs">
-                            {fmtTime(r.amOut)}
-                          </td>
-                          <td className="px-3 py-2.5 text-slate-400 text-xs">
-                            {fmtTime(r.pmIn)}
-                          </td>
-                          <td className="px-3 py-2.5 text-slate-400 text-xs">
-                            {fmtTime(r.pmOut)}
-                          </td>
-                        </>
-                      )}
-                      <td className="px-3 py-2.5 text-cyan-400 font-semibold text-xs">
-                        {fmtHrs(r.totalMinutes)}
-                      </td>
-                      <td className="px-3 py-2.5">
-                        <span className={`badge badge-${r.status} text-xs`}>
-                          {r.status}
-                        </span>
-                      </td>
-                    </tr>
-                  ))}
-                  {!displayHistory.length && (
-                    <tr>
-                      <td
-                        colSpan={8}
-                        className="px-4 py-10 text-center text-slate-500"
+
+              {/* Assign schedule inline */}
+              {assigningSchedule && (
+                <div
+                  className="card-sm space-y-3 border"
+                  style={{
+                    borderColor: "var(--accent)",
+                    borderStyle: "dashed",
+                  }}
+                >
+                  <div
+                    className="text-sm font-semibold"
+                    style={{ color: "var(--text)" }}
+                  >
+                    Assign Schedule
+                  </div>
+                  <select
+                    className="input"
+                    value={selectedScheduleId}
+                    onChange={(e) => setSelectedScheduleId(e.target.value)}
+                  >
+                    <option value="">Select schedule…</option>
+                    {schedules.map((s) => {
+                      const days = (() => {
+                        try {
+                          return JSON.parse(s.workDays).join(", ");
+                        } catch {
+                          return "";
+                        }
+                      })();
+                      return (
+                        <option key={s.id} value={s.id}>
+                          {s.name} · {s.amIn}–{s.amOut} · {days}
+                        </option>
+                      );
+                    })}
+                  </select>
+                  <div className="flex gap-2">
+                    <button
+                      onClick={() => setAssigningSchedule(false)}
+                      className="btn-outline flex-1 text-xs py-2"
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      onClick={assignSchedule}
+                      className="btn-primary flex-1 text-xs py-2 justify-center"
+                    >
+                      Save
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {/* Month/Year filter + Export */}
+              <div className="flex flex-wrap gap-2 items-end justify-between">
+                <div className="flex gap-2">
+                  <div>
+                    <label className="label">Month</label>
+                    <select
+                      className="input w-28"
+                      value={month}
+                      onChange={(e) => setMonth(e.target.value)}
+                    >
+                      {Array.from({ length: 12 }, (_, i) => (
+                        <option
+                          key={i + 1}
+                          value={String(i + 1).padStart(2, "0")}
+                        >
+                          {new Date(2024, i).toLocaleString("en", {
+                            month: "long",
+                          })}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  <div>
+                    <label className="label">Year</label>
+                    <select
+                      className="input w-20"
+                      value={year}
+                      onChange={(e) => setYear(e.target.value)}
+                    >
+                      {[2023, 2024, 2025, 2026].map((y) => (
+                        <option key={y} value={y}>
+                          {y}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                </div>
+                <div className="flex gap-1.5">
+                  <button
+                    onClick={async () => {
+                      try {
+                        await downloadExcel(
+                          selectedOjt.id,
+                          selectedOjt.fullName,
+                          month,
+                          year,
+                        );
+                      } catch {
+                        toast.error("Download failed");
+                      }
+                    }}
+                    className="btn-success flex items-center gap-1 text-xs px-3 py-2"
+                  >
+                    <FileSpreadsheet size={13} /> Excel
+                  </button>
+                  <button
+                    onClick={async () => {
+                      try {
+                        await downloadPdf(
+                          selectedOjt.id,
+                          selectedOjt.fullName,
+                          month,
+                          year,
+                        );
+                      } catch {
+                        toast.error("Download failed");
+                      }
+                    }}
+                    className="btn-danger flex items-center gap-1 text-xs px-3 py-2"
+                  >
+                    <FileText size={13} /> PDF
+                  </button>
+                  <button
+                    onClick={() => window.print()}
+                    className="btn-outline flex items-center gap-1 text-xs px-3 py-2"
+                  >
+                    <Printer size={13} /> Print
+                  </button>
+                </div>
+              </div>
+
+              {/* DTR Records — timeline style */}
+              <div>
+                <div
+                  className="text-xs font-bold uppercase tracking-widest mb-3"
+                  style={{ color: "var(--muted)" }}
+                >
+                  DTR Records —{" "}
+                  {new Date(+year, +month - 1).toLocaleString("en", {
+                    month: "long",
+                  })}{" "}
+                  {year}
+                </div>
+
+                {dtr.length === 0 && (
+                  <div
+                    className="card-sm text-center py-8"
+                    style={{ color: "var(--muted)" }}
+                  >
+                    No records for this period.
+                  </div>
+                )}
+
+                <div className="space-y-2">
+                  {dtr.map((r) => {
+                    const isExpanded = expandedRecord === r.id;
+                    const isRecordToday = isToday(r.date);
+                    const hasSelfies =
+                      r.amInSelfie ||
+                      r.amOutSelfie ||
+                      r.pmInSelfie ||
+                      r.pmOutSelfie;
+
+                    return (
+                      <div
+                        key={r.id}
+                        className="rounded-2xl border overflow-hidden transition-all"
+                        style={{
+                          borderColor: isRecordToday
+                            ? "var(--accent)"
+                            : "var(--border)",
+                          background: "var(--card-bg)",
+                          boxShadow: isRecordToday
+                            ? "0 0 0 1px color-mix(in srgb, var(--accent) 30%, transparent)"
+                            : "none",
+                        }}
                       >
-                        No records for this period.
-                      </td>
-                    </tr>
-                  )}
-                </tbody>
-              </table>
+                        {/* Record header row */}
+                        <div
+                          className="flex items-center gap-3 px-4 py-3 cursor-pointer select-none"
+                          style={{
+                            background: isRecordToday
+                              ? "color-mix(in srgb, var(--accent) 6%, transparent)"
+                              : "transparent",
+                          }}
+                          onClick={() =>
+                            setExpandedRecord(isExpanded ? null : r.id)
+                          }
+                        >
+                          {/* Date */}
+                          <div className="flex-shrink-0 text-center w-12">
+                            <div
+                              className="text-lg font-black leading-none"
+                              style={{
+                                color: isRecordToday
+                                  ? "var(--accent)"
+                                  : "var(--text)",
+                              }}
+                            >
+                              {new Date(
+                                new Date(r.date).getUTCFullYear(),
+                                new Date(r.date).getUTCMonth(),
+                                new Date(r.date).getUTCDate(),
+                              ).getDate()}
+                            </div>
+                            <div
+                              className="text-[10px] uppercase"
+                              style={{ color: "var(--muted)" }}
+                            >
+                              {new Date(
+                                new Date(r.date).getUTCFullYear(),
+                                new Date(r.date).getUTCMonth(),
+                                new Date(r.date).getUTCDate(),
+                              ).toLocaleString("en", { month: "short" })}
+                            </div>
+                          </div>
+
+                          {/* Day name + status */}
+                          <div className="flex-1 min-w-0">
+                            <div
+                              className="text-sm font-semibold flex items-center gap-2"
+                              style={{ color: "var(--text)" }}
+                            >
+                              {new Date(
+                                new Date(r.date).getUTCFullYear(),
+                                new Date(r.date).getUTCMonth(),
+                                new Date(r.date).getUTCDate(),
+                              ).toLocaleString("en", { weekday: "long" })}
+                              {isRecordToday && (
+                                <span
+                                  className="text-[10px] px-2 py-0.5 rounded-full font-bold"
+                                  style={{
+                                    background: "var(--accent)",
+                                    color: "var(--bg)",
+                                  }}
+                                >
+                                  TODAY
+                                </span>
+                              )}
+                            </div>
+                            <div
+                              className="text-xs mt-0.5 flex items-center gap-3 flex-wrap"
+                              style={{ color: "var(--muted)" }}
+                            >
+                              {r.amIn && (
+                                <span>
+                                  In:{" "}
+                                  <span style={{ color: "var(--text)" }}>
+                                    {fmtTime(r.amIn)}
+                                  </span>
+                                </span>
+                              )}
+                              {r.amOut && (
+                                <span>
+                                  Out:{" "}
+                                  <span style={{ color: "var(--text)" }}>
+                                    {fmtTime(r.amOut || r.pmOut)}
+                                  </span>
+                                </span>
+                              )}
+                              {r.totalMinutes > 0 && (
+                                <span style={{ color: "var(--accent)" }}>
+                                  {fmtHrs(r.totalMinutes)}
+                                </span>
+                              )}
+                            </div>
+                          </div>
+
+                          {/* Status badge */}
+                          <span
+                            className={`badge badge-${r.status} flex-shrink-0`}
+                          >
+                            {r.status}
+                          </span>
+
+                          {/* Expand arrow */}
+                          <button
+                            className="flex-shrink-0"
+                            style={{ color: "var(--muted)" }}
+                          >
+                            {isExpanded ? (
+                              <ChevronUp size={15} />
+                            ) : (
+                              <ChevronDown size={15} />
+                            )}
+                          </button>
+                        </div>
+
+                        {/* Expanded detail */}
+                        {isExpanded && (
+                          <div
+                            className="px-4 pb-4 space-y-3"
+                            style={{ borderTop: "1px solid var(--border)" }}
+                          >
+                            {/* Clock events timeline */}
+                            <div className="space-y-2 pt-3">
+                              {[
+                                {
+                                  label:
+                                    periodType === "one_period"
+                                      ? "Clock In"
+                                      : "AM In",
+                                  time: r.amIn,
+                                  selfie: r.amInSelfie,
+                                  type: "in",
+                                },
+                                {
+                                  label:
+                                    periodType === "one_period"
+                                      ? "Clock Out"
+                                      : "AM Out",
+                                  time: r.amOut,
+                                  selfie: r.amOutSelfie,
+                                  type: "out",
+                                },
+                                ...(periodType === "two_period"
+                                  ? [
+                                      {
+                                        label: "PM In",
+                                        time: r.pmIn,
+                                        selfie: r.pmInSelfie,
+                                        type: "in",
+                                      },
+                                      {
+                                        label: "PM Out",
+                                        time: r.pmOut,
+                                        selfie: r.pmOutSelfie,
+                                        type: "out",
+                                      },
+                                    ]
+                                  : []),
+                              ].map(({ label, time, selfie, type }) => (
+                                <div
+                                  key={label}
+                                  className="flex items-center gap-3"
+                                >
+                                  {/* Icon */}
+                                  <div
+                                    className="w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0"
+                                    style={{
+                                      background: time
+                                        ? type === "in"
+                                          ? "color-mix(in srgb, var(--accent) 15%, transparent)"
+                                          : "rgba(168,85,247,0.15)"
+                                        : "var(--surface)",
+                                    }}
+                                  >
+                                    <Clock
+                                      size={13}
+                                      style={{
+                                        color: time
+                                          ? type === "in"
+                                            ? "var(--accent)"
+                                            : "#a855f7"
+                                          : "var(--muted)",
+                                      }}
+                                    />
+                                  </div>
+                                  <div className="flex-1">
+                                    <span
+                                      className="text-xs font-medium"
+                                      style={{ color: "var(--muted)" }}
+                                    >
+                                      {label}
+                                    </span>
+                                  </div>
+                                  <span
+                                    className="text-sm font-bold"
+                                    style={{
+                                      color: time
+                                        ? "var(--text)"
+                                        : "var(--muted)",
+                                    }}
+                                  >
+                                    {fmtTime(time)}
+                                  </span>
+                                  {/* Selfie thumbnail */}
+                                  {selfie && (
+                                    <button
+                                      onClick={() =>
+                                        setSelfiePreview(`${FILE_API}${selfie}`)
+                                      }
+                                      className="w-8 h-8 rounded-lg overflow-hidden border flex-shrink-0 hover:opacity-80 transition-all"
+                                      style={{ borderColor: "var(--border)" }}
+                                    >
+                                      <img
+                                        src={`${FILE_API}${selfie}`}
+                                        className="w-full h-full object-cover"
+                                        alt="selfie"
+                                      />
+                                    </button>
+                                  )}
+                                </div>
+                              ))}
+                            </div>
+
+                            {/* Notes */}
+                            {r.notes && (
+                              <div
+                                className="text-xs px-3 py-2 rounded-lg"
+                                style={{
+                                  background: "var(--surface)",
+                                  color: "var(--muted)",
+                                }}
+                              >
+                                📝 {r.notes}
+                              </div>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
             </div>
+          </>
+        )}
+      </div>
+
+      {/* Selfie lightbox */}
+      {selfiePreview && (
+        <div
+          className="fixed inset-0 z-[60] flex items-center justify-center p-4"
+          style={{ background: "rgba(0,0,0,0.85)" }}
+          onClick={() => setSelfiePreview(null)}
+        >
+          <div className="relative" onClick={(e) => e.stopPropagation()}>
+            <img
+              src={selfiePreview}
+              alt="selfie"
+              className="max-w-xs max-h-[80vh] rounded-2xl shadow-2xl"
+            />
+            <button
+              onClick={() => setSelfiePreview(null)}
+              className="absolute top-2 right-2 w-8 h-8 rounded-full flex items-center justify-center"
+              style={{ background: "rgba(0,0,0,0.6)", color: "#fff" }}
+            >
+              <X size={15} />
+            </button>
+          </div>
+        </div>
+      )}
+    </DashboardLayout>
+  );
+}
+
+/* ── OJT CARD COMPONENT ── */
+function OjtCard({ ojt, assignment, fileApi, onClick }: any) {
+  const getTodayDot = () => "⚪"; // would need separate API call per card
+
+  return (
+    <div
+      onClick={onClick}
+      className="rounded-2xl border overflow-hidden cursor-pointer transition-all hover:shadow-lg group"
+      style={{
+        background: "var(--card-bg)",
+        borderColor: "var(--border)",
+        boxShadow: "var(--shadow)",
+      }}
+      onMouseEnter={(e) =>
+        ((e.currentTarget as HTMLElement).style.borderColor = "var(--accent)")
+      }
+      onMouseLeave={(e) =>
+        ((e.currentTarget as HTMLElement).style.borderColor = "var(--border)")
+      }
+    >
+      {/* Card top — avatar + info */}
+      <div className="p-5 flex items-center gap-4">
+        <div
+          className="w-14 h-14 rounded-2xl border-2 overflow-hidden flex-shrink-0 flex items-center justify-center transition-all"
+          style={{
+            borderColor: "var(--border)",
+            background: "color-mix(in srgb, var(--accent) 10%, transparent)",
+          }}
+        >
+          {ojt?.profileImage ? (
+            <img
+              src={`${fileApi}${ojt.profileImage}`}
+              className="w-full h-full object-cover"
+              alt=""
+            />
+          ) : (
+            <span
+              className="text-2xl font-black"
+              style={{ color: "var(--accent)" }}
+            >
+              {ojt?.fullName?.charAt(0)}
+            </span>
+          )}
+        </div>
+        <div className="flex-1 min-w-0">
+          <div
+            className="font-bold text-base truncate"
+            style={{ color: "var(--text)" }}
+          >
+            {ojt?.fullName}
+          </div>
+          <div
+            className="text-xs truncate mt-0.5"
+            style={{ color: "var(--muted)" }}
+          >
+            {ojt?.email}
           </div>
         </div>
       </div>
-    </DashboardLayout>
+
+      {/* Card info row */}
+      <div className="px-5 pb-5 space-y-2">
+        {(ojt?.school || ojt?.course) && (
+          <div
+            className="flex items-start gap-4 text-xs flex-wrap"
+            style={{ color: "var(--muted)" }}
+          >
+            {ojt?.school && (
+              <span className="flex items-center gap-1">
+                <Building2 size={11} /> {ojt.school}
+              </span>
+            )}
+            {ojt?.course && (
+              <span className="flex items-center gap-1">
+                <BookOpen size={11} /> {ojt.course}
+              </span>
+            )}
+          </div>
+        )}
+
+        {/* Footer */}
+        <div
+          className="flex items-center justify-between pt-2"
+          style={{ borderTop: "1px solid var(--border)" }}
+        >
+          <span className="text-xs" style={{ color: "var(--muted)" }}>
+            Assigned{" "}
+            {new Date(assignment.assignedAt).toLocaleDateString("en-PH", {
+              month: "short",
+              day: "numeric",
+              year: "numeric",
+            })}
+          </span>
+          <span
+            className="text-xs font-semibold px-2.5 py-1 rounded-full transition-all"
+            style={{
+              background: "color-mix(in srgb, var(--accent) 10%, transparent)",
+              color: "var(--accent)",
+            }}
+          >
+            View DTR →
+          </span>
+        </div>
+      </div>
+    </div>
   );
 }
