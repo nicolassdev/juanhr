@@ -1,0 +1,217 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "mysql"
+  url      = env("DATABASE_URL")
+}
+
+model Role {
+  id        Int      @id @default(autoincrement())
+  name      String   @unique // admin | supervisor | ojt
+  label     String
+  createdAt DateTime @default(now()) @map("created_at")
+  users     User[]
+
+  @@map("roles")
+}
+
+model Department {
+  id          Int       @id @default(autoincrement())
+  name        String
+  description String?   @db.Text
+  deletedAt   DateTime? @map("deleted_at")
+  createdAt   DateTime  @default(now()) @map("created_at")
+  updatedAt   DateTime  @updatedAt @map("updated_at")
+  users       User[]
+
+  @@map("departments")
+}
+
+model User {
+  id             Int       @id @default(autoincrement())
+  roleId         Int       @map("role_id")
+  departmentId   Int?      @map("department_id")
+  fullName       String    @map("full_name")
+  email          String    @unique
+  passwordHash   String    @map("password_hash")
+  gender         String    // male | female | other
+  school         String?
+  course         String?
+  profileImage   String?   @map("profile_image")
+  isActive       Boolean   @default(true) @map("is_active")
+  isLocked       Boolean   @default(false) @map("is_locked")
+  lastLoginAt    DateTime? @map("last_login_at")
+  deletedAt      DateTime? @map("deleted_at")
+  createdAt      DateTime  @default(now()) @map("created_at")
+  updatedAt      DateTime  @updatedAt @map("updated_at")
+
+  role                 Role                  @relation(fields: [roleId], references: [id])
+  department           Department?           @relation(fields: [departmentId], references: [id])
+  dtrs                 Dtr[]
+  ojtSchedule          OjtSchedule?
+  supervisorAssignment SupervisorAssignment? @relation("ojtAssignment")
+  supervisedOjts       SupervisorAssignment[] @relation("supervisorAssignment")
+  userPermissions      UserPermission[]
+  notifications        Notification[]
+  auditLogs            AuditLog[]
+  refreshTokens        RefreshToken[]
+  createdSchedules     Schedule[]
+
+  @@index([email])
+  @@index([roleId])
+  @@map("users")
+}
+
+model Permission {
+  id      Int    @id @default(autoincrement())
+  key     String @unique
+  label   String
+  module  String
+
+  userPermissions UserPermission[]
+
+  @@map("permissions")
+}
+
+model UserPermission {
+  userId       Int     @map("user_id")
+  permissionId Int     @map("permission_id")
+  granted      Boolean @default(true)
+  grantedBy    Int?    @map("granted_by")
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  user       User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  permission Permission @relation(fields: [permissionId], references: [id], onDelete: Cascade)
+
+  @@id([userId, permissionId])
+  @@map("user_permissions")
+}
+
+model SupervisorAssignment {
+  id           Int      @id @default(autoincrement())
+  supervisorId Int      @map("supervisor_id")
+  ojtId        Int      @unique @map("ojt_id")
+  assignedAt   DateTime @default(now()) @map("assigned_at")
+  assignedBy   Int?     @map("assigned_by")
+
+  supervisor User @relation("supervisorAssignment", fields: [supervisorId], references: [id])
+  ojt        User @relation("ojtAssignment", fields: [ojtId], references: [id], onDelete: Cascade)
+
+  @@index([supervisorId])
+  @@map("supervisor_assignments")
+}
+
+model Schedule {
+  id           Int       @id @default(autoincrement())
+  name         String
+  periodType   String    @default("one_period") @map("period_type") // one_period | two_period
+  amIn         String    @map("am_in")   // "08:00"
+  amOut        String    @map("am_out")  // "12:00"
+  pmIn         String?   @map("pm_in")
+  pmOut        String?   @map("pm_out")
+  workDays     String    @map("work_days") // JSON string: ["Mon","Tue","Wed","Thu","Fri"]
+  graceMinutes Int       @default(15) @map("grace_minutes")
+  createdBy    Int?      @map("created_by")
+  deletedAt    DateTime? @map("deleted_at")
+  createdAt    DateTime  @default(now()) @map("created_at")
+
+  creator     User?        @relation(fields: [createdBy], references: [id])
+  ojtSchedules OjtSchedule[]
+  dtrs         Dtr[]
+
+  @@map("schedules")
+}
+
+model OjtSchedule {
+  id          Int      @id @default(autoincrement())
+  ojtId       Int      @unique @map("ojt_id")
+  scheduleId  Int      @map("schedule_id")
+  assignedBy  Int?     @map("assigned_by")
+  effectiveAt DateTime @map("effective_at")
+
+  ojt      User     @relation(fields: [ojtId], references: [id], onDelete: Cascade)
+  schedule Schedule @relation(fields: [scheduleId], references: [id])
+
+  @@map("ojt_schedules")
+}
+
+model Dtr {
+  id           Int       @id @default(autoincrement())
+  userId       Int       @map("user_id")
+  scheduleId   Int?      @map("schedule_id")
+  date         DateTime  @db.Date
+  amIn         DateTime? @map("am_in")
+  amInSelfie   String?   @map("am_in_selfie")
+  amOut        DateTime? @map("am_out")
+  amOutSelfie  String?   @map("am_out_selfie")
+  pmIn         DateTime? @map("pm_in")
+  pmInSelfie   String?   @map("pm_in_selfie")
+  pmOut        DateTime? @map("pm_out")
+  pmOutSelfie  String?   @map("pm_out_selfie")
+  totalMinutes Int?      @map("total_minutes")
+  status       String    @default("present") // present | late | absent | half_day
+  notes        String?   @db.Text
+  createdAt    DateTime  @default(now()) @map("created_at")
+  updatedAt    DateTime  @updatedAt @map("updated_at")
+
+  user     User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  schedule Schedule? @relation(fields: [scheduleId], references: [id])
+
+  @@unique([userId, date])
+  @@index([userId, date])
+  @@index([date])
+  @@map("dtr")
+}
+
+model AuditLog {
+  id         BigInt   @id @default(autoincrement())
+  userId     Int?     @map("user_id")
+  action     String
+  module     String
+  targetId   Int?     @map("target_id")
+  targetType String?  @map("target_type")
+  oldValues  String?  @map("old_values") @db.Text
+  newValues  String?  @map("new_values") @db.Text
+  ipAddress  String?  @map("ip_address")
+  userAgent  String?  @map("user_agent") @db.Text
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  user User? @relation(fields: [userId], references: [id])
+
+  @@index([userId])
+  @@index([action])
+  @@index([createdAt])
+  @@map("audit_logs")
+}
+
+model Notification {
+  id        BigInt    @id @default(autoincrement())
+  userId    Int       @map("user_id")
+  type      String
+  title     String
+  body      String?   @db.Text
+  data      String?   @db.Text
+  isRead    Boolean   @default(false) @map("is_read")
+  readAt    DateTime? @map("read_at")
+  createdAt DateTime  @default(now()) @map("created_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, isRead])
+  @@map("notifications")
+}
+
+model RefreshToken {
+  id        Int      @id @default(autoincrement())
+  userId    Int      @map("user_id")
+  tokenHash String   @map("token_hash")
+  expiresAt DateTime @map("expires_at")
+  revoked   Boolean  @default(false)
+  createdAt DateTime @default(now()) @map("created_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("refresh_tokens")
+}
