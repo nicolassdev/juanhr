@@ -29,6 +29,59 @@ export class DtrService {
     return new Date(Date.UTC(now.getFullYear(), now.getMonth(), now.getDate()));
   }
 
+  /**
+   * Determine the DTR status for a record.
+   * Priority: missing_logs → late → present
+   */
+  private computeStatus(
+    dtr: {
+      amIn: Date | null;
+      amOut: Date | null;
+      pmIn: Date | null;
+      pmOut: Date | null;
+    },
+    schedule: {
+      periodType: string;
+      amIn: string;
+      amOut: string;
+      pmIn?: string | null;
+      pmOut?: string | null;
+      graceMinutes: number;
+      lateRule?: string | null;
+    },
+  ): string {
+    const isTwo = schedule.periodType === "two_period";
+
+    // ── MISSING LOGS DETECTION ──────────────────────────────
+    // AM in but no AM out
+    if (dtr.amIn && !dtr.amOut) return "missing_logs";
+    // AM out but no AM in (should not happen but guard it)
+    if (!dtr.amIn && dtr.amOut) return "missing_logs";
+    // 2-period: PM in but no PM out
+    if (isTwo && dtr.pmIn && !dtr.pmOut) return "missing_logs";
+    // 2-period: PM out but no PM in
+    if (isTwo && !dtr.pmIn && dtr.pmOut) return "missing_logs";
+
+    // ── LATE DETECTION ──────────────────────────────────────
+    if (dtr.amIn) {
+      let cutoff: Date;
+      if (schedule.lateRule) {
+        // Use explicit lateRule time (e.g. "08:05")
+        const [lh, lm] = schedule.lateRule.split(":").map(Number);
+        cutoff = new Date(dtr.amIn);
+        cutoff.setHours(lh, lm, 0, 0);
+      } else {
+        // Fall back to grace-period-based cutoff
+        const [ah, am] = schedule.amIn.split(":").map(Number);
+        cutoff = new Date(dtr.amIn);
+        cutoff.setHours(ah, am + schedule.graceMinutes, 0, 0);
+      }
+      if (dtr.amIn > cutoff) return "late";
+    }
+
+    return "present";
+  }
+
   /** Notify the supervisor assigned to this OJT */
   private async notifySupervisor(
     ojtUserId: number,
@@ -42,16 +95,9 @@ export class DtrService {
       });
       if (!assignment) return;
       await this.prisma.notification.create({
-        data: {
-          userId: assignment.supervisorId,
-          type,
-          title,
-          body,
-        },
+        data: { userId: assignment.supervisorId, type, title, body },
       });
-    } catch {
-      /* non-critical — don't throw */
-    }
+    } catch {}
   }
 
   async clockIn(
@@ -67,38 +113,34 @@ export class DtrService {
       where: { ojtId: userId },
       include: { schedule: true },
     });
-
-    if (!ojtSchedule || !ojtSchedule.schedule) {
+    if (!ojtSchedule?.schedule)
       throw new BadRequestException(
         "No schedule assigned. Contact your supervisor.",
       );
-    }
 
     const schedule = ojtSchedule.schedule;
-    const periodType = schedule.periodType;
     const workDays: string[] = JSON.parse(schedule.workDays);
+    if (!workDays.includes(dayName))
+      throw new BadRequestException(`Today (${dayName}) is not a work day.`);
 
-    if (!workDays.includes(dayName)) {
-      throw new BadRequestException(
-        `Today (${dayName}) is not a work day. Schedule: ${workDays.join(", ")}.`,
-      );
+    // Late rule: explicit time OR grace period
+    let cutoff: Date;
+    if (schedule.lateRule) {
+      const [lh, lm] = (schedule.lateRule as string).split(":").map(Number);
+      cutoff = new Date();
+      cutoff.setHours(lh, lm, 0, 0);
+    } else {
+      const amInTime = this.parseTimeToday(schedule.amIn);
+      cutoff = new Date(amInTime.getTime() + schedule.graceMinutes * 60000);
     }
-
-    const amInTime = this.parseTimeToday(schedule.amIn);
-    const graceCutoff = new Date(
-      amInTime.getTime() + schedule.graceMinutes * 60000,
-    );
-    const status = now > graceCutoff ? "late" : "present";
+    const amStatus = now > cutoff ? "late" : "present";
 
     const selfiePath = selfieFile
       ? `/uploads/selfies/${selfieFile.filename}`
       : null;
-
     const existing = await this.prisma.dtr.findUnique({
       where: { userId_date: { userId, date: dateOnly } },
     });
-
-    // Get OJT name for notification
     const ojtUser = await this.prisma.user.findUnique({
       where: { id: userId },
     });
@@ -107,6 +149,7 @@ export class DtrService {
       minute: "2-digit",
     });
 
+    // ── FIRST CLOCK-IN (AM In) ────────────────────────────────
     if (!existing) {
       const dtr = await this.prisma.dtr.create({
         data: {
@@ -115,7 +158,7 @@ export class DtrService {
           date: dateOnly,
           amIn: now,
           amInSelfie: selfiePath,
-          status,
+          status: amStatus,
           notes: notes || null,
         },
       });
@@ -128,27 +171,46 @@ export class DtrService {
           targetType: "dtr",
         },
       });
-      // Notify supervisor
       await this.notifySupervisor(
         userId,
         `${ojtUser?.fullName} clocked in`,
-        `${status === "late" ? "⚠️ Late clock-in" : "✅ On time"} at ${timeStr}`,
+        `${amStatus === "late" ? "⚠️ Late" : "✅ On time"} at ${timeStr}`,
         "DTR_IN",
       );
       return {
         message: "Clock-in (AM) recorded",
-        status,
+        status: amStatus,
         time: now,
-        periodType,
+        periodType: schedule.periodType,
         nextAction: "clock-out",
       };
     }
 
-    if (periodType === "two_period") {
-      if (!existing.amOut)
-        throw new BadRequestException("Please clock out AM first.");
+    // ── SECOND CLOCK-IN (PM In) — two_period only ─────────────
+    if (schedule.periodType === "two_period") {
+      if (!existing.amOut && existing.amIn) {
+        // Employee clocking in PM without clocking out AM → mark AM as missing_logs first
+        await this.prisma.dtr.update({
+          where: { id: existing.id },
+          data: { status: "missing_logs", pmIn: now, pmInSelfie: selfiePath },
+        });
+        await this.notifySupervisor(
+          userId,
+          `${ojtUser?.fullName} clocked in (PM)`,
+          `PM clock-in at ${timeStr} — AM clock-out missing`,
+          "DTR_IN",
+        );
+        return {
+          message: "Clock-in (PM) recorded. Warning: AM clock-out was missing.",
+          time: now,
+          periodType: schedule.periodType,
+          nextAction: "clock-out",
+        };
+      }
       if (existing.pmIn)
-        throw new BadRequestException("Already clocked in for PM.");
+        throw new BadRequestException(
+          "Already clocked in for PM. Please clock out.",
+        );
       await this.prisma.dtr.update({
         where: { id: existing.id },
         data: { pmIn: now, pmInSelfie: selfiePath },
@@ -162,14 +224,14 @@ export class DtrService {
       return {
         message: "Clock-in (PM) recorded",
         time: now,
-        periodType,
+        periodType: schedule.periodType,
         nextAction: "clock-out",
       };
     }
 
     throw new BadRequestException(
       existing.amOut
-        ? "Already completed your record today."
+        ? "Day complete."
         : "Already clocked in. Please clock out first.",
     );
   }
@@ -186,16 +248,10 @@ export class DtrService {
       where: { ojtId: userId },
       include: { schedule: true },
     });
-
-    if (!ojtSchedule || !ojtSchedule.schedule) {
-      throw new BadRequestException(
-        "No schedule assigned. Contact your supervisor.",
-      );
-    }
+    if (!ojtSchedule?.schedule)
+      throw new BadRequestException("No schedule assigned.");
 
     const schedule = ojtSchedule.schedule;
-    const periodType = schedule.periodType;
-
     const existing = await this.prisma.dtr.findUnique({
       where: { userId_date: { userId, date: dateOnly } },
     });
@@ -213,15 +269,26 @@ export class DtrService {
       minute: "2-digit",
     });
 
+    // ── AM CLOCK OUT ──────────────────────────────────────────
     if (!existing.amOut) {
-      const amMinutes = this.computeMinutes(existing.amIn, now);
-      const isDayComplete = periodType === "one_period";
+      const amMinutes = this.computeMinutes(existing.amIn!, now);
+      const isDayComplete = schedule.periodType === "one_period";
+
+      const updatedDtr = { ...existing, amOut: now };
+      const finalStatus = isDayComplete
+        ? this.computeStatus(
+            { amIn: existing.amIn, amOut: now, pmIn: null, pmOut: null },
+            schedule as any,
+          )
+        : "present"; // partial — will be re-evaluated at PM out
+
       await this.prisma.dtr.update({
         where: { id: existing.id },
         data: {
           amOut: now,
           amOutSelfie: selfiePath,
           totalMinutes: isDayComplete ? amMinutes : null,
+          status: finalStatus,
           notes: notes || existing.notes,
         },
       });
@@ -246,37 +313,50 @@ export class DtrService {
         await this.notifySupervisor(
           userId,
           `${ojtUser?.fullName} clocked out (AM)`,
-          `AM clock-out at ${timeStr}`,
+          `AM out at ${timeStr}`,
           "DTR_OUT",
         );
       }
       return {
-        message: isDayComplete
-          ? "Clock-out recorded. Day complete!"
-          : "AM Clock-out recorded",
+        message: isDayComplete ? "Day complete!" : "AM out recorded",
         minutesWorked: amMinutes,
         isDayComplete,
-        periodType,
+        status: finalStatus,
       };
     }
 
-    if (periodType === "one_period")
+    if (schedule.periodType === "one_period")
       throw new BadRequestException("Already completed today.");
-
     if (!existing.pmIn)
       throw new BadRequestException("Please clock in for PM first.");
-    if (existing.pmOut)
-      throw new BadRequestException("Already clocked out PM.");
+    if (existing.pmOut) throw new BadRequestException("Day already complete.");
 
-    const pmMinutes = this.computeMinutes(existing.pmIn, now);
+    // ── PM CLOCK OUT ──────────────────────────────────────────
+    const pmMinutes = this.computeMinutes(existing.pmIn!, now);
     const amMinutes = existing.amOut
-      ? this.computeMinutes(existing.amIn, existing.amOut)
+      ? this.computeMinutes(existing.amIn!, existing.amOut)
       : 0;
     const total = amMinutes + pmMinutes;
 
+    // Re-evaluate full-day status
+    const finalStatus = this.computeStatus(
+      {
+        amIn: existing.amIn,
+        amOut: existing.amOut,
+        pmIn: existing.pmIn,
+        pmOut: now,
+      },
+      schedule as any,
+    );
+
     await this.prisma.dtr.update({
       where: { id: existing.id },
-      data: { pmOut: now, pmOutSelfie: selfiePath, totalMinutes: total },
+      data: {
+        pmOut: now,
+        pmOutSelfie: selfiePath,
+        totalMinutes: total,
+        status: finalStatus,
+      },
     });
     await this.prisma.auditLog.create({
       data: {
@@ -290,14 +370,14 @@ export class DtrService {
     await this.notifySupervisor(
       userId,
       `${ojtUser?.fullName} clocked out (PM)`,
-      `✅ Day complete at ${timeStr} — ${this.fmt(total)} total rendered`,
+      `✅ Day complete at ${timeStr} — ${this.fmt(total)} total`,
       "DTR_OUT",
     );
     return {
-      message: "PM Clock-out. Day complete!",
+      message: "Day complete!",
       totalMinutes: total,
       isDayComplete: true,
-      periodType,
+      status: finalStatus,
     };
   }
 
@@ -314,7 +394,11 @@ export class DtrService {
       where: { userId, date: { gte: from, lte: to } },
       orderBy: { date: "asc" },
     });
-    const totalMinutes = records.reduce((s, r) => s + (r.totalMinutes || 0), 0);
+    // Compute totalMinutes only for complete records — ignore missing_logs
+    const totalMinutes = records.reduce((s, r) => {
+      if (r.status === "missing_logs") return s;
+      return s + (r.totalMinutes || 0);
+    }, 0);
     return {
       records,
       totalMinutes,
@@ -351,7 +435,16 @@ export class DtrService {
       this.prisma.dtr.findMany({
         where,
         include: {
-          user: { select: { id: true, fullName: true, email: true } },
+          user: {
+            select: {
+              id: true,
+              fullName: true,
+              email: true,
+              profileImage: true,
+              school: true,
+              course: true,
+            },
+          },
         },
         skip: (+page - 1) * +limit,
         take: +limit,
@@ -362,16 +455,64 @@ export class DtrService {
     return { data, total };
   }
 
+  /** Get all OJT users with their DTR summary for the admin card view */
+  async getOjtUsersSummary() {
+    const ojtUsers = await this.prisma.user.findMany({
+      where: { role: { name: "ojt" }, deletedAt: null },
+      select: {
+        id: true,
+        fullName: true,
+        email: true,
+        profileImage: true,
+        school: true,
+        course: true,
+        ojtSchedule: { include: { schedule: true } },
+      },
+    });
+
+    const results = await Promise.all(
+      ojtUsers.map(async (u) => {
+        const records = await this.prisma.dtr.findMany({
+          where: { userId: u.id },
+        });
+        const totalMinutes = records
+          .filter((r) => r.status !== "missing_logs")
+          .reduce((s, r) => s + (r.totalMinutes || 0), 0);
+        const todayUTC = this.getTodayUTC();
+        const todayRecord = records.find(
+          (r) =>
+            new Date(r.date).toISOString().split("T")[0] ===
+            todayUTC.toISOString().split("T")[0],
+        );
+        return {
+          ...u,
+          totalDays: records.length,
+          totalMinutes,
+          present: records.filter((r) => r.status === "present").length,
+          late: records.filter((r) => r.status === "late").length,
+          missingLogs: records.filter((r) => r.status === "missing_logs")
+            .length,
+          todayRecord: todayRecord || null,
+        };
+      }),
+    );
+    return results;
+  }
+
   async getSummary(userId: number) {
     const records = await this.prisma.dtr.findMany({ where: { userId } });
-    const totalMinutes = records.reduce((s, r) => s + (r.totalMinutes || 0), 0);
+    const validRecords = records.filter((r) => r.status !== "missing_logs");
+    const totalMinutes = validRecords.reduce(
+      (s, r) => s + (r.totalMinutes || 0),
+      0,
+    );
     return {
       totalDays: records.length,
       totalMinutes,
       totalHours: +(totalMinutes / 60).toFixed(2),
       present: records.filter((r) => r.status === "present").length,
       late: records.filter((r) => r.status === "late").length,
-      halfDay: records.filter((r) => r.status === "half_day").length,
+      missingLogs: records.filter((r) => r.status === "missing_logs").length,
     };
   }
 

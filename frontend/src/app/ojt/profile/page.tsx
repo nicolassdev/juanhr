@@ -20,6 +20,7 @@ export default function OjtProfilePage() {
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
 
   useEffect(() => {
+    console.log("USER:", user);
     if (user) {
       setForm({
         school: (user as any).school || "",

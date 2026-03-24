@@ -113,6 +113,7 @@ model Schedule {
   pmOut        String?   @map("pm_out")
   workDays     String    @map("work_days") // JSON string: ["Mon","Tue","Wed","Thu","Fri"]
   graceMinutes Int       @default(15) @map("grace_minutes")
+  lateRule     String?   @map("late_rule")  // "HH:MM" — clock-in after this = Late. Null = use grace period
   createdBy    Int?      @map("created_by")
   deletedAt    DateTime? @map("deleted_at")
   createdAt    DateTime  @default(now()) @map("created_at")
@@ -151,7 +152,7 @@ model Dtr {
   pmOut        DateTime? @map("pm_out")
   pmOutSelfie  String?   @map("pm_out_selfie")
   totalMinutes Int?      @map("total_minutes")
-  status       String    @default("present") // present | late | absent | half_day
+  status       String    @default("present") // present | late | missing_logs | half_day
   notes        String?   @db.Text
   createdAt    DateTime  @default(now()) @map("created_at")
   updatedAt    DateTime  @updatedAt @map("updated_at")

@@ -24,6 +24,7 @@ const EMPTY_FORM = {
   pmOut: "17:00",
   workDays: ["Mon", "Tue", "Wed", "Thu", "Fri"],
   graceMinutes: 15,
+  lateRule: "",
 };
 
 export default function SchedulesPage() {
@@ -75,6 +76,7 @@ export default function SchedulesPage() {
         }
       })(),
       graceMinutes: s.graceMinutes ?? 15,
+      lateRule: s.lateRule || "",
     });
     setShowModal(true);
   };
@@ -270,12 +272,14 @@ export default function SchedulesPage() {
                     )}
                     <div className="flex items-center gap-2 text-sm">
                       <span>⏱</span>
-                      <span style={{ color: "var(--muted)" }}>Grace:</span>
+                      <span style={{ color: "var(--muted)" }}>
+                        {s.lateRule ? "Late after:" : "Grace:"}
+                      </span>
                       <span
                         className="font-semibold"
                         style={{ color: "var(--text)" }}
                       >
-                        {s.graceMinutes} min
+                        {s.lateRule ? s.lateRule : `${s.graceMinutes} min`}
                       </span>
                     </div>
                   </div>
@@ -539,6 +543,50 @@ export default function SchedulesPage() {
                 <p className="text-xs mt-1" style={{ color: "var(--muted)" }}>
                   Clock-ins within {form.graceMinutes} min of start are marked
                   Present (not Late)
+                </p>
+              </div>
+
+              {/* Late Rule */}
+              <div>
+                <label className="label">
+                  Late Rule{" "}
+                  <span
+                    style={{
+                      textTransform: "none",
+                      letterSpacing: 0,
+                      fontWeight: 400,
+                      color: "var(--muted)",
+                    }}
+                  >
+                    (optional — overrides grace period)
+                  </span>
+                </label>
+                <div className="flex items-center gap-3">
+                  <input
+                    type="time"
+                    className="input flex-1"
+                    value={form.lateRule}
+                    onChange={(e) => set("lateRule", e.target.value)}
+                    placeholder="e.g. 08:05"
+                  />
+                  {form.lateRule && (
+                    <button
+                      type="button"
+                      onClick={() => set("lateRule", "")}
+                      className="text-xs px-3 py-2 rounded-lg border transition-all"
+                      style={{
+                        borderColor: "var(--border)",
+                        color: "var(--muted)",
+                      }}
+                    >
+                      Clear
+                    </button>
+                  )}
+                </div>
+                <p className="text-xs mt-1" style={{ color: "var(--muted)" }}>
+                  {form.lateRule
+                    ? `Clock-in after ${form.lateRule} = Late. At or before = Present.`
+                    : `Not set — grace period (${form.graceMinutes} min) will be used instead.`}
                 </p>
               </div>
 

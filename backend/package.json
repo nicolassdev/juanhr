@@ -7,7 +7,8 @@
     "start:dev": "nest start --watch",
     "start:prod": "node dist/main",
     "build": "nest build",
-    "lint": "eslint src --fix"
+    "lint": "eslint src --fix",
+    "start:debug": "nest start --watch --debug"
   },
   "dependencies": {
     "@nestjs/common": "^10.0.0",

@@ -117,4 +117,10 @@ export class DtrController {
   getOjtSummary(@Param("id", ParseIntPipe) ojtId: number) {
     return this.dtrService.getSummary(ojtId);
   }
+
+  @Get("admin/ojt-summary")
+  @Roles("admin")
+  getOjtUsersSummary() {
+    return this.dtrService.getOjtUsersSummary();
+  }
 }
